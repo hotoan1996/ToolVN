@@ -1,0 +1,42 @@
+# Swift Package Manager
+.build/
+.swiftpm/
+Packages/
+xcuserdata/
+*.xcodeproj/project.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+DerivedData/
+
+# Input Method build output (Scripts/build-im.sh)
+/build/
+
+# Generated iconset (ToolVN-*.icns built alongside)
+InputMethod/Resources/ToolVN*.iconset/
+InputMethod/Resources/ToolVN-Telex.icns
+InputMethod/Resources/ToolVN-VNI.icns
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon?
+._*
+
+# Xcode
+*.xcuserstate
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM/
+
+# Secrets / local config
+.env
+.env.*
+*.pem
+credentials.json
+
+# Editor
+.idea/
+*.swp
+*~

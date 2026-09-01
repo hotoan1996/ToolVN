@@ -1,0 +1,17 @@
+category	input	expected	note
+marks	dd	đ	
+marks	aa	â	
+marks	uow	ươ	
+tone_plain	as	á	
+tone_plain	aj	ạ	
+tone_marked	aas	ấ	
+placement	vieetj	việt	không thành vịêt
+placement	hoocj	ộc	unicode U+1ED9 — học
+words	khoongf	không	chuỗi gõ: khoongf
+words	mootj	một	
+words	camr	cảm	
+regression	tuowng	tương	
+punctuation	(vieetj)	(việt)	
+vni_tone	a1	á	
+vni_mark	d9	đ	
+vni_mark	a61	ấ	

@@ -1,0 +1,33 @@
+# Ma trận thanh Telex (golden) — category matrix_plain
+# Thứ tự: a e i o u y × s f r x j
+telex	vietnamese
+as	á
+af	à
+ar	ả
+ax	ã
+aj	ạ
+es	é
+ef	è
+er	ẻ
+ex	ẽ
+ej	ẹ
+is	í
+if	ì
+ir	ỉ
+ix	ĩ
+ij	ị
+os	ó
+of	ò
+or	ỏ
+ox	õ
+oj	ọ
+us	ú
+uf	ù
+ur	ủ
+ux	ũ
+uj	ụ
+ys	ý
+yf	ỳ
+yr	ỷ
+yx	ỹ
+yj	ỵ
