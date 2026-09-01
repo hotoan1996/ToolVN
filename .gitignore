@@ -40,3 +40,7 @@ credentials.json
 .idea/
 *.swp
 *~
+
+# Python generated files
+__pycache__/
+*.py[cod]
