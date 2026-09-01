@@ -88,25 +88,27 @@ final class VietnameseInputController: IMKInputController {
     override func activateServer(_ sender: Any!) {
         syncInputMethodPreferenceFromMode()
         if !rawBuffer.isEmpty {
-            commitPendingComposition()
+            commitPendingComposition(client: inputClient(from: sender))
         } else {
             compositionUTF16Range = nil
         }
     }
 
     override func deactivateServer(_ sender: Any!) {
-        commitPendingComposition()
+        commitPendingComposition(client: inputClient(from: sender))
     }
 
     override func commitComposition(_ sender: Any!) {
-        commitPendingComposition()
+        commitPendingComposition(client: inputClient(from: sender))
     }
 
     override func doCommand(by aSelector: Selector!, command infoDictionary: [AnyHashable: Any]!) {
         let name = NSStringFromSelector(aSelector)
-        if isEnabled, let client = client() {
+        let suppliedClient =
+            infoDictionary?[AnyHashable(kIMKCommandClientName)] as? IMKTextInput
+        if isEnabled, let client = suppliedClient ?? client() {
             if Self.navigationSelectors.contains(name) {
-                commitPendingComposition()
+                commitPendingComposition(client: client)
             } else if name == "selectAll:" {
                 flushPreeditForEditCommand(client: client)
                 super.doCommand(by: aSelector, command: infoDictionary)
@@ -120,11 +122,11 @@ final class VietnameseInputController: IMKInputController {
     }
 
     override func handle(_ event: NSEvent!, client sender: Any!) -> Bool {
-        guard isEnabled, let client = client() else { return false }
+        guard isEnabled, let client = inputClient(from: sender) else { return false }
 
         switch event.type {
         case .leftMouseDown, .rightMouseDown, .otherMouseDown:
-            commitPendingComposition()
+            commitPendingComposition(client: client)
             return false
 
         case .keyDown:
@@ -161,7 +163,7 @@ final class VietnameseInputController: IMKInputController {
             return handleForwardDelete(client: client, event: event)
 
         case 36, 76:
-            commitPendingComposition()
+            commitPendingComposition(client: client)
             return false
 
         case 48:
@@ -169,23 +171,23 @@ final class VietnameseInputController: IMKInputController {
             return false
 
         case 53:
-            cancelPendingComposition()
+            cancelPendingComposition(client: client)
             return false
 
         case 123, 124, 125, 126, 115, 119, 116, 121:
-            commitPendingComposition()
+            commitPendingComposition(client: client)
             return false
 
         default:
             guard let chars = event.characters, let first = chars.first else { return false }
 
             if isWordBreak(first) {
-                commitPendingComposition()
+                commitPendingComposition(client: client)
                 return false
             }
 
             guard first.isASCII, first.isLetter || isTelexModifier(first) else {
-                commitPendingComposition()
+                commitPendingComposition(client: client)
                 return false
             }
 
@@ -295,6 +297,12 @@ final class VietnameseInputController: IMKInputController {
         event.keyCode == 48
     }
 
+    /// Electron/Figma có thể đổi renderer/client trong cùng controller.
+    /// Luôn ưu tiên client đi kèm callback thay vì client được giữ lúc init.
+    private func inputClient(from sender: Any?) -> IMKTextInput? {
+        (sender as? IMKTextInput) ?? client()
+    }
+
     private func isSelectAllKeyEvent(_ event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         guard flags.contains(.command), !flags.contains(.shift) else { return false }
@@ -333,7 +341,7 @@ final class VietnameseInputController: IMKInputController {
     /// Tab (Cursor gợi ý, focus form): chỉ chốt telex nếu đang gõ; không nuốt phím.
     private func prepareForTabPassThrough(client: IMKTextInput) {
         if !rawBuffer.isEmpty {
-            commitPendingComposition()
+            commitPendingComposition(client: client)
             return
         }
         if client.markedRange().location != NSNotFound {
@@ -479,8 +487,8 @@ final class VietnameseInputController: IMKInputController {
         compositionUTF16Range = nil
     }
 
-    private func commitPendingComposition() {
-        guard let client = client() else { return }
+    private func commitPendingComposition(client suppliedClient: IMKTextInput? = nil) {
+        guard let client = suppliedClient ?? client() else { return }
         guard !rawBuffer.isEmpty else {
             compositionUTF16Range = nil
             return
@@ -527,8 +535,8 @@ final class VietnameseInputController: IMKInputController {
         _ = insertReplacingPreedit(client: client, text: composed, preferredRange: preferredRange)
     }
 
-    private func cancelPendingComposition() {
-        guard let client = client() else {
+    private func cancelPendingComposition(client suppliedClient: IMKTextInput? = nil) {
+        guard let client = suppliedClient ?? client() else {
             rawBuffer = ""
             compositionUTF16Range = nil
             return
