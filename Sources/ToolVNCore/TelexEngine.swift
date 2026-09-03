@@ -246,10 +246,17 @@ enum TelexTransform {
         ch.isLetter && !telexVowels.contains(ch)
     }
 
-    /// Giữ `ow` literal (how, show): phụ âm ngay trước `o` và chưa có nguyên âm nào trong buffer (tránh hopow → sai).
+    /// Giữ `ow` literal chỉ cho how/show. Các từ khác (low, thow, cow…) → ơ; gõ literal `thow`/`low` bằng `thoww`/`loww`.
     private static func shouldKeepLiteralOWAtWordEnd(outChars: [Character]) -> Bool {
-        guard let last = outChars.last, isTelexConsonant(lowerChar(last)) else { return false }
-        return !outChars.contains { telexVowels.contains(lowerChar($0)) }
+        guard !outChars.isEmpty else { return false }
+        guard !outChars.contains(where: { telexVowels.contains(lowerChar($0)) }) else { return false }
+        let prefix = String(outChars.map { lowerChar($0) })
+        switch prefix {
+        case "h", "sh":
+            return true
+        default:
+            return false
+        }
     }
 
   /// w sau phụ âm: đổi nguyên âm o/u/a gần nhất phía trước (hopw → hơp).

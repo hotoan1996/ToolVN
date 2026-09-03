@@ -46,11 +46,12 @@ public enum MarkedTextCommitRegression {
         errors.append(contentsOf: emptyMarkedSelectionErrors())
         errors.append(contentsOf: fallbackTrackingErrors())
         errors.append(contentsOf: spacePassThroughErrors())
+        errors.append(contentsOf: clipboardSelectionPreserveErrors())
         return errors
     }
 
     public static func summary() -> String {
-        "Marked/commit IMK: 5 nhóm regression (stale range, NSNotFound, clear, tracking, space)"
+        "Marked/commit IMK: 6 nhóm regression (stale, NSNotFound, clear, tracking, space, clipboard)"
     }
 
     private static func staleMarkedCommitErrors() -> [String] {
@@ -135,5 +136,47 @@ public enum MarkedTextCommitRegression {
         return shouldConsumeSpace
             ? ["[space] phải pass-through khi client không cung cấp selectedRange"]
             : []
+    }
+
+    /// Google Docs: khi không compose, `markedRange` có thể trùng selection.
+    /// Policy ⌘C/⌘V: không `setMarkedText("")` — nếu không sẽ xóa vùng chọn.
+    private static func clipboardSelectionPreserveErrors() -> [String] {
+        let text = "xin chào ToolVN"
+        let start = 4
+        let length = 4 // "chào"
+        var client = MockClient(
+            document: text as NSString,
+            // Docs hay báo markedRange = vùng đang chọn dù IME không compose.
+            markedRange: NSRange(location: start, length: length),
+            selectedRange: NSRange(location: start, length: length),
+            keepMarkedRangeStaleAfterInsert: false
+        )
+
+        let rawBufferEmpty = true
+        let compositionTracked: NSRange? = nil
+        let clearStaleMarkedForCopyPaste = false
+
+        // Policy đúng (⌘C/⌘V): không đụng marked khi rawBuffer rỗng và không track composition.
+        let shouldStripMarked =
+            !rawBufferEmpty
+            || (clearStaleMarkedForCopyPaste && compositionTracked != nil)
+
+        if shouldStripMarked {
+            client.clearMarked(selectionRange: NSRange(location: 0, length: 0))
+            // Sai: thay marked/selection bằng rỗng.
+            client.insertText("", replacementRange: NSRange(location: start, length: length))
+        }
+
+        var errors: [String] = []
+        if client.document as String != text {
+            errors.append("[clipboard] ⌘C/⌘V không được xóa selection khi không compose")
+        }
+        if client.selectedRange.length != length {
+            errors.append("[clipboard] phải giữ nguyên vùng chọn cho ⌘C")
+        }
+        if shouldStripMarked {
+            errors.append("[clipboard] policy copy/paste không được strip marked khi buffer rỗng")
+        }
+        return errors
     }
 }

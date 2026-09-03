@@ -110,12 +110,14 @@ final class VietnameseInputController: IMKInputController {
             if Self.navigationSelectors.contains(name) {
                 commitPendingComposition(client: client)
             } else if name == "selectAll:" {
-                flushPreeditForEditCommand(client: client)
+                flushOwnPreeditForShortcut(client: client, clearStaleMarked: true)
                 super.doCommand(by: aSelector, command: infoDictionary)
                 completeSelectAllIfNeeded(client: client)
                 return
             } else if Self.editCommandSelectors.contains(name) {
-                flushPreeditForEditCommand(client: client)
+                // ⌘C/⌘V/⌘X: chỉ commit composition của mình; không clear marked
+                // khi buffer rỗng (Docs báo markedRange ≈ selection → xóa vùng chọn).
+                flushOwnPreeditForShortcut(client: client, clearStaleMarked: false)
             }
         }
         super.doCommand(by: aSelector, command: infoDictionary)
@@ -138,11 +140,13 @@ final class VietnameseInputController: IMKInputController {
 
         if shouldPassThroughToApplication(event) {
             let selectAll = isSelectAllKeyEvent(event)
-            flushPreeditForEditCommand(client: client)
+            // Chỉ chốt/gỡ preedit của ToolVN. Không đụng marked/selection của Docs
+            // khi không đang compose — nếu không ⌘C/⌘V bị hỏng.
+            flushOwnPreeditForShortcut(client: client, clearStaleMarked: selectAll)
             if selectAll {
                 completeSelectAllIfNeeded(client: client)
             }
-            // Luôn false — Safari/Docs cần nhận ⌘A; Zalo nhận thêm selectAll: từ completeSelectAllIfNeeded.
+            // Luôn false — Safari/Docs cần nhận ⌘A/⌘C/⌘V.
             return false
         }
 
@@ -352,6 +356,13 @@ final class VietnameseInputController: IMKInputController {
 
     /// Chốt preedit (marked → chữ thật) rồi gỡ hẳn marked — ⌘A/⌘C/⌘X một lần (setMarkedText không chặn Select All).
     private func flushPreeditForEditCommand(client: IMKTextInput) {
+        flushOwnPreeditForShortcut(client: client, clearStaleMarked: true)
+    }
+
+    /// Shortcut hệ thống: chỉ đụng document khi ToolVN đang/đã để composition.
+    /// Google Docs thường báo `markedRange` trùng vùng chọn; `setMarkedText("")`
+    /// lúc đó sẽ xóa selection và làm ⌘C/⌘V không hoạt động.
+    private func flushOwnPreeditForShortcut(client: IMKTextInput, clearStaleMarked: Bool) {
         if !rawBuffer.isEmpty {
             let composed = composedText()
             let preferred = activeCompositionRange(client: client) ?? trackedCompositionRange()
@@ -364,7 +375,10 @@ final class VietnameseInputController: IMKInputController {
             // markedRange ngay lập tức vì Electron/WebKit có thể trả range cũ.
             return
         }
-        ensureMarkedTextFullyCleared(client: client)
+
+        if clearStaleMarked, compositionUTF16Range != nil {
+            ensureMarkedTextFullyCleared(client: client)
+        }
         compositionUTF16Range = nil
     }
 
