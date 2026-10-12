@@ -16,6 +16,10 @@ final class VietnameseInputController: IMKInputController {
     private var rawBuffer = ""
     /// Vùng UTF-16 preedit chỉ khi client cung cấp markedRange hợp lệ.
     private var compositionUTF16Range: NSRange?
+    /// Zalo/Electron sau emoji: `setMarkedText` có thể không dính — chuyển sang insertText cho từ hiện tại.
+    private var preferInsertFallback = false
+    /// Giới hạn độ dài một từ Telex/VNI — tránh thay nhầm cả dòng khi range client lệch.
+    private static let maxCompositionUTF16 = 20
 
     private var toolVNDefaults: UserDefaults {
         UserDefaults(suiteName: preferencesDomain) ?? .standard
@@ -87,19 +91,26 @@ final class VietnameseInputController: IMKInputController {
 
     override func activateServer(_ sender: Any!) {
         syncInputMethodPreferenceFromMode()
+        // Zalo emoji/sticker panel: focus quay lại ô chat — bắt đầu composition mới sạch.
         if !rawBuffer.isEmpty {
             commitPendingComposition(client: inputClient(from: sender))
-        } else {
-            compositionUTF16Range = nil
         }
+        resetCompositionState()
     }
 
     override func deactivateServer(_ sender: Any!) {
         commitPendingComposition(client: inputClient(from: sender))
+        resetCompositionState()
     }
 
     override func commitComposition(_ sender: Any!) {
         commitPendingComposition(client: inputClient(from: sender))
+    }
+
+    private func resetCompositionState() {
+        rawBuffer = ""
+        compositionUTF16Range = nil
+        preferInsertFallback = false
     }
 
     override func doCommand(by aSelector: Selector!, command infoDictionary: [AnyHashable: Any]!) {
@@ -196,8 +207,13 @@ final class VietnameseInputController: IMKInputController {
             }
 
             if rawBuffer.isEmpty {
-                clearStalePreeditSurface(client: client)
+                // Chỉ gỡ marked do ToolVN tạo. Sau icon Zalo, client hay báo
+                // markedRange “ma” — clear sẽ làm input chết.
+                if compositionUTF16Range != nil {
+                    clearStalePreeditSurface(client: client)
+                }
                 compositionUTF16Range = nil
+                preferInsertFallback = false
             } else {
                 freezeCompositionIfCaretLeftPreedit(client: client)
             }
@@ -262,31 +278,30 @@ final class VietnameseInputController: IMKInputController {
         return false
     }
 
-    /// Một phím space → chốt từ + một khoảng trắng (một lần chèn, tránh Docs cần bấm space hai lần).
+    /// Đang gõ Telex/VNI: chốt từ + một space (một lần chèn).
+    /// Không compose: luôn pass-through — Zalo sau `:))`→icon khiến `insertText(" ")`
+    /// thất bại nhưng nếu `return true` thì Space bị nuốt hoàn toàn.
     private func handleSpaceBar(client: IMKTextInput, event: NSEvent) -> Bool {
         if event.isARepeat { return true }
 
-        if !rawBuffer.isEmpty {
-            let composed = composedText()
-            let preferred = trackedCompositionRange()
-            rawBuffer = ""
+        guard !rawBuffer.isEmpty else {
+            preferInsertFallback = false
             compositionUTF16Range = nil
-            if !composed.isEmpty {
-                let withSpace = composed + " "
-                if let end = insertReplacingPreedit(client: client, text: withSpace, preferredRange: preferred) {
-                    setClientSelectedRange(client, NSRange(location: end, length: 0))
-                }
-            }
-            return true
+            return false
         }
 
-        let caret = client.selectedRange()
-        if caret.location != NSNotFound {
-            _ = client.insertText(" ", replacementRange: caret)
-            setClientSelectedRange(client, NSRange(location: caret.location + 1, length: 0))
-            return true
+        let composed = composedText()
+        let preferred = trackedCompositionRange()
+        rawBuffer = ""
+        compositionUTF16Range = nil
+        preferInsertFallback = false
+        if !composed.isEmpty {
+            let withSpace = composed + " "
+            if let end = insertReplacingPreedit(client: client, text: withSpace, preferredRange: preferred) {
+                setClientSelectedRange(client, NSRange(location: end, length: 0))
+            }
         }
-        return false
+        return true
     }
 
     private func shouldPassThroughToApplication(_ event: NSEvent) -> Bool {
@@ -368,6 +383,7 @@ final class VietnameseInputController: IMKInputController {
             let preferred = activeCompositionRange(client: client) ?? trackedCompositionRange()
             rawBuffer = ""
             compositionUTF16Range = nil
+            preferInsertFallback = false
             if !composed.isEmpty {
                 _ = insertReplacingPreedit(client: client, text: composed, preferredRange: preferred)
             }
@@ -380,6 +396,7 @@ final class VietnameseInputController: IMKInputController {
             ensureMarkedTextFullyCleared(client: client)
         }
         compositionUTF16Range = nil
+        preferInsertFallback = false
     }
 
     /// Gỡ marked trước Select All — Safari/WebKit thường “ăn” ⌘A lần đầu nếu còn composition.
@@ -431,6 +448,7 @@ final class VietnameseInputController: IMKInputController {
     }
 
     /// Preedit qua `setMarkedText` — Docs/Safari thường không thay thế đúng khi `insertText` từng phím (KKiKiKiê…).
+    /// Zalo sau emoji: marked có thể không dính → fallback `insertText` + theo dõi vùng UTF-16.
     private func syncPreeditToClient(client: IMKTextInput) {
         guard !rawBuffer.isEmpty else {
             removeCompositionFromClient(client: client)
@@ -444,41 +462,73 @@ final class VietnameseInputController: IMKInputController {
         }
 
         let preeditUTF16 = utf16Length(composed)
-        let caretInPreedit = NSRange(location: preeditUTF16, length: 0)
-        let replacementRange = markedReplacementRange(client: client)
 
-        client.setMarkedText(
-            NSAttributedString(string: composed),
-            selectionRange: caretInPreedit,
-            replacementRange: replacementRange
+        if !preferInsertFallback {
+            let caretInPreedit = NSRange(location: preeditUTF16, length: 0)
+            let replacementRange = markedReplacementRange(client: client)
+
+            client.setMarkedText(
+                NSAttributedString(string: composed),
+                selectionRange: caretInPreedit,
+                replacementRange: replacementRange
+            )
+
+            refreshCompositionRangeFromClient(client: client, preeditUTF16Length: preeditUTF16)
+            if compositionUTF16Range != nil {
+                return
+            }
+            // Marked không dính (Zalo emoji panel, một số Electron) — không nuốt phím.
+            preferInsertFallback = true
+        }
+
+        syncPreeditViaInsert(client: client, composed: composed, preeditUTF16: preeditUTF16)
+    }
+
+    private func syncPreeditViaInsert(
+        client: IMKTextInput,
+        composed: String,
+        preeditUTF16: Int
+    ) {
+        let replaceRange = safeReplacementRange(
+            client: client,
+            preferred: trackedCompositionRange(),
+            allowingSelectionReplace: compositionUTF16Range == nil
         )
-
-        refreshCompositionRangeFromClient(client: client, preeditUTF16Length: preeditUTF16)
+        let start = replaceRange.location == NSNotFound ? nil : replaceRange.location
+        _ = client.insertText(composed, replacementRange: replaceRange)
+        if let start {
+            compositionUTF16Range = NSRange(location: start, length: preeditUTF16)
+        } else {
+            compositionUTF16Range = nil
+        }
     }
 
     private func markedReplacementRange(client: IMKTextInput) -> NSRange {
         let marked = client.markedRange()
-        if marked.location != NSNotFound {
+        // Chỉ thay marked đang thuộc composition ToolVN. Sau emoji Zalo, client
+        // thường còn markedRange “ma” — dùng làm replacement sẽ xóa icon / cả dòng.
+        if isPlausibleCompositionRange(marked, caret: client.selectedRange()),
+            compositionUTF16Range != nil
+        {
             return marked
         }
-        if let tracked = trackedCompositionRange(), tracked.length > 0 {
+        if let tracked = trackedCompositionRange(),
+            isPlausibleCompositionRange(tracked, caret: client.selectedRange())
+        {
             return tracked
         }
-        let sel = client.selectedRange()
-        if sel.location != NSNotFound, sel.length > 0 {
-            return sel
-        }
+        // Không dùng selection dài làm replacement cho setMarkedText — Zalo/Electron
+        // hay báo sai và xóa dòng trước. Selection nhỏ: để insert/commit xử lý.
         return NSRange(location: NSNotFound, length: NSNotFound)
     }
 
     private func refreshCompositionRangeFromClient(client: IMKTextInput, preeditUTF16Length: Int) {
         let marked = client.markedRange()
-        if marked.location != NSNotFound {
+        if isPlausibleCompositionRange(marked, caret: client.selectedRange()) {
             compositionUTF16Range = NSRange(location: marked.location, length: preeditUTF16Length)
             return
         }
-        // Không suy diễn preedit nằm trong document từ caret: một số Electron/
-        // WebKit hiển thị marked text nhưng không trả markedRange.
+        // Không suy diễn preedit nằm trong document từ caret khi dùng marked path.
         compositionUTF16Range = nil
     }
 
@@ -491,26 +541,29 @@ final class VietnameseInputController: IMKInputController {
         guard caret.location < range.location || caret.location > end else { return }
 
         let composed = composedText()
-        guard !composed.isEmpty else {
-            rawBuffer = ""
-            compositionUTF16Range = nil
-            return
+        // Caret đã rời — chèn thẳng vào range cũ (không qua safeReplacement gần caret).
+        // Chỉ khi độ dài còn trong giới hạn từ; range lệch/dài → bỏ, tránh xóa dòng.
+        if !composed.isEmpty, range.length <= Self.maxCompositionUTF16 {
+            _ = client.insertText(composed, replacementRange: range)
         }
-        commitPreeditSurface(client: client, composed: composed, preferredRange: range)
-        rawBuffer = ""
-        compositionUTF16Range = nil
+        resetCompositionState()
     }
 
     private func commitPendingComposition(client suppliedClient: IMKTextInput? = nil) {
-        guard let client = suppliedClient ?? client() else { return }
+        guard let client = suppliedClient ?? client() else {
+            resetCompositionState()
+            return
+        }
         guard !rawBuffer.isEmpty else {
             compositionUTF16Range = nil
+            preferInsertFallback = false
             return
         }
         let composed = composedText()
         let preferred = trackedCompositionRange()
         rawBuffer = ""
         compositionUTF16Range = nil
+        preferInsertFallback = false
         if !composed.isEmpty, let end = insertReplacingPreedit(client: client, text: composed, preferredRange: preferred) {
             setClientSelectedRange(client, NSRange(location: end, length: 0))
         }
@@ -523,18 +576,11 @@ final class VietnameseInputController: IMKInputController {
         text: String,
         preferredRange: NSRange?
     ) -> Int? {
-        let marked = client.markedRange()
-        let replaceRange: NSRange
-        if marked.location != NSNotFound {
-            replaceRange = marked
-        } else if let preferredRange, preferredRange.location != NSNotFound, preferredRange.length > 0 {
-            replaceRange = preferredRange
-        } else {
-            let caret = client.selectedRange()
-            replaceRange = caret.location == NSNotFound
-                ? NSRange(location: NSNotFound, length: NSNotFound)
-                : caret
-        }
+        let replaceRange = safeReplacementRange(
+            client: client,
+            preferred: preferredRange,
+            allowingSelectionReplace: true
+        )
 
         let insertLocation =
             replaceRange.location == NSNotFound ? nil : replaceRange.location
@@ -544,6 +590,66 @@ final class VietnameseInputController: IMKInputController {
         return insertLocation + utf16Length(text)
     }
 
+    /// Chỉ thay vùng gần caret và đủ ngắn — chặn case Zalo/Docs báo range lệch → xóa dòng trước.
+    private func safeReplacementRange(
+        client: IMKTextInput,
+        preferred: NSRange?,
+        allowingSelectionReplace: Bool
+    ) -> NSRange {
+        let caret = client.selectedRange()
+        let marked = client.markedRange()
+
+        if isPlausibleCompositionRange(marked, caret: caret) {
+            if let preferred,
+                preferred.location != NSNotFound,
+                abs(preferred.location - marked.location) <= 1
+            {
+                return marked
+            }
+            if preferred == nil || preferred?.location == NSNotFound {
+                return marked
+            }
+            // preferred lệch marked → tin marked nếu gần caret
+            if isRangeNearCaret(marked, caret: caret) {
+                return marked
+            }
+        }
+
+        if let preferred,
+            isPlausibleCompositionRange(preferred, caret: caret),
+            isRangeNearCaret(preferred, caret: caret)
+        {
+            return preferred
+        }
+
+        if caret.location == NSNotFound {
+            return NSRange(location: NSNotFound, length: NSNotFound)
+        }
+        if allowingSelectionReplace,
+            caret.length > 0,
+            caret.length <= Self.maxCompositionUTF16
+        {
+            return caret
+        }
+        return NSRange(location: caret.location, length: 0)
+    }
+
+    private func isPlausibleCompositionRange(_ range: NSRange, caret: NSRange) -> Bool {
+        guard range.location != NSNotFound, range.length > 0 else { return false }
+        guard range.length <= Self.maxCompositionUTF16 else { return false }
+        // Không bắt buộc caret hợp lệ (một số client trả NSNotFound khi vẫn marked đúng).
+        if caret.location == NSNotFound { return true }
+        return isRangeNearCaret(range, caret: caret)
+    }
+
+    private func isRangeNearCaret(_ range: NSRange, caret: NSRange) -> Bool {
+        guard range.location != NSNotFound, caret.location != NSNotFound else { return false }
+        let start = range.location
+        let end = range.location + max(range.length, 0)
+        // Caret nằm trong / sát cuối preedit (cho phép lệch 1 khi client cập nhật chậm).
+        return caret.location >= start && caret.location <= end + 1
+    }
+
     /// Chốt preedit (marked hoặc vùng UTF-16 đã theo dõi) — một lần, không gọi sync trước.
     private func commitPreeditSurface(client: IMKTextInput, composed: String, preferredRange: NSRange?) {
         _ = insertReplacingPreedit(client: client, text: composed, preferredRange: preferredRange)
@@ -551,20 +657,23 @@ final class VietnameseInputController: IMKInputController {
 
     private func cancelPendingComposition(client suppliedClient: IMKTextInput? = nil) {
         guard let client = suppliedClient ?? client() else {
-            rawBuffer = ""
-            compositionUTF16Range = nil
+            resetCompositionState()
             return
         }
         removeCompositionFromClient(client: client)
+        preferInsertFallback = false
     }
 
     private func activeCompositionRange(client: IMKTextInput) -> NSRange? {
         guard !rawBuffer.isEmpty else { return nil }
+        let caret = client.selectedRange()
         let marked = client.markedRange()
-        if marked.location != NSNotFound {
+        if isPlausibleCompositionRange(marked, caret: caret) {
             return marked
         }
-        if let compositionUTF16Range, compositionUTF16Range.location != NSNotFound {
+        if let compositionUTF16Range,
+            isPlausibleCompositionRange(compositionUTF16Range, caret: caret)
+        {
             return compositionUTF16Range
         }
         return nil
@@ -584,14 +693,22 @@ final class VietnameseInputController: IMKInputController {
     private func clearPreeditSurface(client: IMKTextInput, caretAfterClear: Bool) -> Bool {
         let marked = client.markedRange()
         if marked.location != NSNotFound {
+            // Range dài/lệch: chỉ gỡ marked bằng NSNotFound — không replace theo marked (tránh xóa dòng).
+            let replace =
+                (marked.length > 0 && marked.length <= Self.maxCompositionUTF16)
+                ? marked
+                : NSRange(location: NSNotFound, length: NSNotFound)
             let caret = NSRange(location: marked.location, length: 0)
             client.setMarkedText(
                 NSAttributedString(string: ""),
                 selectionRange: NSRange(location: 0, length: 0),
-                replacementRange: marked
+                replacementRange: replace
             )
             compositionUTF16Range = nil
-            if caretAfterClear, caret.location != NSNotFound {
+            if caretAfterClear,
+                replace.location != NSNotFound,
+                caret.location != NSNotFound
+            {
                 setClientSelectedRange(client, caret)
             }
             return true
@@ -609,11 +726,13 @@ final class VietnameseInputController: IMKInputController {
     private func removeCompositionFromClient(client: IMKTextInput) {
         if clearPreeditSurface(client: client, caretAfterClear: true) {
             rawBuffer = ""
+            preferInsertFallback = false
             return
         }
         clearMarkedPreeditIfAny(client: client)
         rawBuffer = ""
         compositionUTF16Range = nil
+        preferInsertFallback = false
     }
 
     private func clearMarkedPreeditIfAny(client: IMKTextInput) {
